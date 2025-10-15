@@ -1,0 +1,64 @@
+version: '3.8'
+
+services:
+  # Base de datos MySQL para el servicio de web scraping
+  mysql-scraper:
+    image: mysql:8.0
+    container_name: book_scraper_mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: password
+      MYSQL_DATABASE: book_prices
+      MYSQL_USER: scraper
+      MYSQL_PASSWORD: scraperpass
+    ports:
+      - "3312:3306"  # Puerto externo 3312 para evitar conflictos
+    volumes:
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - mysql_scraper_data:/var/lib/mysql
+    networks:
+      - bookworm_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+      interval: 10s
+
+  # Servicio de web scraping de precios de libros
+  book-scraper:
+    build: .
+    container_name: book_scraper_service
+    environment:
+      # Configuración de base de datos (apunta al servicio mysql-scraper)
+      - DB_HOST=mysql-scraper
+      - DB_PORT=3306
+      - DB_USER=scraper
+      - DB_PASSWORD=scraperpass
+      - DB_NAME=book_prices
+      
+      # Configuración del servidor
+      - PORT=8080
+      - GIN_MODE=release
+      
+      # Configuración de scraping
+      - SCRAPING_TIMEOUT=30
+      - USER_AGENT=BookScraper/1.0
+      - MAX_RETRIES=3
+      - SCRAPING_SOURCES=buscalibre,panamericana
+      - BUSCALIBRE_BASE_URL=https://www.buscalibre.com.co
+      - PANAMERICANA_BASE_URL=https://www.panamericana.com.co
+    ports:
+      - "8080:8080"  # Puerto para el servicio de scraping
+    depends_on:
+      mysql-scraper:
+        condition: service_healthy
+    networks:
+      - bookworm_network
+    restart: unless-stopped
+
+volumes:
+  mysql_scraper_data:
+
+networks:
+  bookworm_network:
+    external: true
+    name: bookworm_network
