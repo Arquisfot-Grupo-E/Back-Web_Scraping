@@ -1,7 +1,6 @@
 package scraper
 
 import (
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
@@ -19,46 +18,7 @@ type Scraper struct {
 	config *config.Config
 }
 
-// Estructuras para parsear JSON-LD de Panamericana
-type PanamericanaProduct struct {
-	Context          string                 `json:"@context"`
-	Type             string                 `json:"@type"`
-	ItemListElements []PanamericanaListItem `json:"itemListElement"`
-}
-
-type PanamericanaListItem struct {
-	Type     string           `json:"@type"`
-	Position int              `json:"position"`
-	Item     PanamericanaItem `json:"item"`
-}
-
-type PanamericanaItem struct {
-	Context     string              `json:"@context"`
-	Type        string              `json:"@type"`
-	ID          string              `json:"@id"`
-	Name        string              `json:"name"`
-	Brand       PanamericanaBrand   `json:"brand"`
-	Offers      []PanamericanaOffer `json:"offers"` // Array de ofertas
-	Description string              `json:"description"`
-}
-
-type PanamericanaBrand struct {
-	Type string `json:"@type"`
-	Name string `json:"name"`
-}
-
-type PanamericanaOffer struct {
-	Type          string             `json:"@type"`
-	Price         float64            `json:"price"` // Precio individual
-	PriceCurrency string             `json:"priceCurrency"`
-	Availability  string             `json:"availability"`
-	Seller        PanamericanaSeller `json:"seller"`
-}
-
-type PanamericanaSeller struct {
-	Type string `json:"@type"`
-	Name string `json:"name"`
-}
+// Las estructuras de Panamericana han sido removidas ya que usamos scraping HTML directo
 
 // NewScraper crea una nueva instancia del scraper
 func NewScraper(cfg *config.Config) *Scraper {
@@ -93,6 +53,8 @@ func (s *Scraper) ScrapeBookPrices(bookTitle string) *models.BookResult {
 			go s.scrapeBuscalibre(bookTitle, priceChan, errorChan)
 		case "panamericana":
 			go s.scrapePanamericana(bookTitle, priceChan, errorChan)
+		case "casadellibro":
+			go s.scrapeCasaDelLibro(bookTitle, priceChan, errorChan)
 		default:
 			log.Printf("⚠️  Fuente de scraping no reconocida: %s", source)
 			go func() { errorChan <- fmt.Errorf("fuente no reconocida: %s", source) }()
@@ -203,78 +165,115 @@ func (s *Scraper) scrapeBuscalibre(bookTitle string, priceChan chan<- models.Boo
 	}
 }
 
-// scrapePanamericana realiza scraping en Panamericana usando JSON-LD
+// scrapePanamericana realiza scraping en Panamericana usando HTML
 func (s *Scraper) scrapePanamericana(bookTitle string, priceChan chan<- models.BookPrice, errorChan chan<- error) {
 	defer func() {
 		if r := recover(); r != nil {
+			log.Printf("❌ PANIC en Panamericana scraper: %v", r)
 			errorChan <- fmt.Errorf("panic en Panamericana scraper: %v", r)
 		}
 	}()
+
+	log.Printf("🏪 INICIANDO scraping de Panamericana para: '%s'", bookTitle)
 
 	// Crear collector con configuración
 	c := s.createCollector()
 
 	var minPrice float64 = 0
-	var bestProduct PanamericanaItem
+	var bestTitle string
 	found := false
+	elementsFound := 0
 
-	// Buscar JSON-LD estructurado en la página
-	c.OnHTML("script[type='application/ld+json']", func(e *colly.HTMLElement) {
-		jsonText := e.Text
-		log.Printf("🔍 JSON-LD encontrado en Panamericana")
+	// Usar HTML scraping en lugar de JSON-LD que no funciona consistentemente
+	c.OnHTML(".vtex-product-summary-2-x-container, .vtex-search-result-3-x-galleryItem, .vtex-product-summary, .product-item", func(e *colly.HTMLElement) {
+		elementsFound++
+		log.Printf("🔍 Panamericana - Elemento %d encontrado", elementsFound)
 
-		var product PanamericanaProduct
-		if err := json.Unmarshal([]byte(jsonText), &product); err != nil {
-			log.Printf("⚠️ Error parseando JSON-LD de Panamericana: %v", err)
-			// Intentar parsear como array directo de productos
-			var items []PanamericanaItem
-			if err2 := json.Unmarshal([]byte(jsonText), &items); err2 != nil {
-				log.Printf("⚠️ Tampoco se pudo parsear como array: %v", err2)
-				return
+		// Extraer título desde varios selectores posibles
+		title := strings.TrimSpace(e.ChildText(".vtex-product-summary-2-x-productBrand"))
+		if title == "" {
+			title = strings.TrimSpace(e.ChildText(".vtex-store-components-3-x-productBrandName"))
+			if title == "" {
+				title = strings.TrimSpace(e.ChildText("h3"))
+				if title == "" {
+					title = strings.TrimSpace(e.ChildText("a"))
+					if title == "" {
+						title = strings.TrimSpace(e.ChildText(".product-name"))
+					}
+				}
 			}
-			// Si es array directo, procesarlo
-			for _, item := range items {
-				s.processPanamericanaItem(item, bookTitle, &minPrice, &bestProduct, &found)
-			}
-			return
 		}
 
-		// Buscar en itemListElement si existe
-		if len(product.ItemListElements) > 0 {
-			for _, listItem := range product.ItemListElements {
-				s.processPanamericanaItem(listItem.Item, bookTitle, &minPrice, &bestProduct, &found)
+		// Extraer precio desde varios selectores posibles
+		priceText := strings.TrimSpace(e.ChildText(".vtex-product-price-1-x-sellingPrice"))
+		if priceText == "" {
+			priceText = strings.TrimSpace(e.ChildText(".vtex-store-components-3-x-sellingPrice"))
+			if priceText == "" {
+				priceText = strings.TrimSpace(e.ChildText(".price"))
+				if priceText == "" {
+					// Buscar en cualquier elemento que contenga $
+					e.ForEach("*", func(i int, elem *colly.HTMLElement) {
+						text := strings.TrimSpace(elem.Text)
+						if strings.Contains(text, "$") && (strings.Contains(text, "000") || strings.Contains(text, ".")) && len(text) < 20 {
+							priceText = text
+						}
+					})
+				}
 			}
+		}
+
+		log.Printf("📚 Panamericana encontró producto - Título: '%s', Precio: '%s'", title, priceText)
+
+		if title != "" && priceText != "" && s.matchesTitle(title, bookTitle) {
+			if price := s.parsePrice(priceText); price > 0 {
+				if minPrice == 0 || price < minPrice {
+					minPrice = price
+					bestTitle = title
+					found = true
+					log.Printf("✅ Panamericana - Mejor precio: $%.0f - %s", price, title)
+				}
+			}
+		} else if title == "" {
+			log.Printf("⚠️ Panamericana - Elemento sin título")
+		} else if priceText == "" {
+			log.Printf("⚠️ Panamericana - Elemento sin precio: '%s'", title)
 		}
 	})
 
-	// Construir URL de búsqueda para Panamericana
-	// Formato: https://www.panamericana.com.co/titulo-libro?_q=titulo-libro&map=ft
-	formattedTitle := strings.ToLower(strings.ReplaceAll(bookTitle, " ", "%20"))
-	encodedQuery := url.QueryEscape(bookTitle)
-	searchURL := fmt.Sprintf("%s/%s?_q=%s&map=ft",
-		s.config.PanamericanaBaseURL,
-		formattedTitle,
-		encodedQuery)
+	// También intentar con la búsqueda simple de Panamericana
+	searchURL := fmt.Sprintf("%s/search/?_query=%s", s.config.PanamericanaBaseURL, url.QueryEscape(bookTitle))
 
 	log.Printf("🌐 Panamericana URL: %s", searchURL)
-
 	log.Printf("🔗 Buscando en Panamericana: %s", searchURL)
 
+	// Callback para debug
+	c.OnResponse(func(r *colly.Response) {
+		log.Printf("✅ Panamericana - Respuesta HTTP %d recibida, tamaño: %d bytes", r.StatusCode, len(r.Body))
+	})
+
+	c.OnError(func(r *colly.Response, err error) {
+		log.Printf("❌ Error HTTP en Panamericana (status %d): %v", r.StatusCode, err)
+	})
+
 	if err := c.Visit(searchURL); err != nil {
+		log.Printf("❌ Panamericana - Error al visitar URL: %v", err)
 		errorChan <- fmt.Errorf("error visitando Panamericana: %v", err)
 		return
 	}
 
+	log.Printf("📊 Panamericana - Resumen: %d elementos procesados, encontrado: %t, precio: $%.0f", elementsFound, found, minPrice)
+
 	if found && minPrice > 0 {
 		finalPrice := models.BookPrice{
-			Title:     bestProduct.Name,
+			Title:     bestTitle,
 			Price:     minPrice,
 			Source:    "Panamericana",
 			ScrapedAt: time.Now(),
 		}
-		log.Printf("🎉 Panamericana - Precio final: $%.0f para '%s'", minPrice, bestProduct.Name)
+		log.Printf("🎉 Panamericana - Precio final: $%.0f para '%s'", minPrice, bestTitle)
 		priceChan <- finalPrice
 	} else {
+		log.Printf("❌ Panamericana - No se encontraron resultados para '%s' (elementos: %d)", bookTitle, elementsFound)
 		errorChan <- fmt.Errorf("no se encontró '%s' en Panamericana", bookTitle)
 	}
 }
@@ -360,27 +359,203 @@ func (s *Scraper) parsePrice(priceText string) float64 {
 	return 0
 }
 
-// processPanamericanaItem procesa un item individual de Panamericana
-func (s *Scraper) processPanamericanaItem(item PanamericanaItem, bookTitle string, minPrice *float64, bestProduct *PanamericanaItem, found *bool) {
-	log.Printf("📚 Panamericana encontró libro - Título: '%s'", item.Name)
+// Método processPanamericanaItem eliminado - ya no se usa con el nuevo scraping HTML
 
-	if !s.matchesTitle(item.Name, bookTitle) {
+// scrapeCasaDelLibro realiza scraping en Casa del Libro Colombia
+func (s *Scraper) scrapeCasaDelLibro(bookTitle string, priceChan chan<- models.BookPrice, errorChan chan<- error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("❌ PANIC en Casa del Libro scraper: %v", r)
+			errorChan <- fmt.Errorf("panic en Casa del Libro scraper: %v", r)
+		}
+	}()
+
+	log.Printf("🏪 INICIANDO scraping de Casa del Libro para: '%s'", bookTitle)
+
+	// Crear collector con configuración
+	c := s.createCollector()
+
+	var minPrice float64 = 0
+	var bestTitle string
+	found := false
+	elementsFound := 0
+
+	// Configurar callback específico para Casa del Libro
+	// Basado en la estructura HTML observada en las capturas de pantalla
+	// Los productos están en li.x-base-grid_result.x-base-grid_item
+	c.OnHTML("li.x-base-grid_result.x-base-grid_item", func(e *colly.HTMLElement) {
+		elementsFound++
+		log.Printf("🔍 Casa del Libro - Elemento %d encontrado (li.x-base-grid_result)", elementsFound)
+
+		// Extraer título del libro desde el enlace con clase x-result-link x-result__description
+		title := strings.TrimSpace(e.ChildText("a.x-result-link.x-result__description"))
+		
+		// Si no encontramos el título, intentar con selectores alternativos
+		if title == "" {
+			title = strings.TrimSpace(e.ChildText("a.x-result-link"))
+			if title == "" {
+				title = strings.TrimSpace(e.ChildText("a[data-v-4d589f60]"))
+				if title == "" {
+					title = strings.TrimSpace(e.ChildText("a"))
+				}
+			}
+		}
+
+		// Extraer precio desde elemento con clase x-currency
+		priceText := strings.TrimSpace(e.ChildText("span.x-currency"))
+
+		// Si no encontramos precio en x-currency, intentar otros selectores
+		if priceText == "" {
+			priceText = strings.TrimSpace(e.ChildText(".x-result-current-price"))
+			if priceText == "" {
+				// Buscar cualquier span que contenga $ y números
+				e.ForEach("span", func(i int, span *colly.HTMLElement) {
+					text := strings.TrimSpace(span.Text)
+					if strings.Contains(text, "$") && (strings.Contains(text, "000") || strings.Contains(text, ".")) {
+						priceText = text
+						log.Printf("💰 Casa del Libro - Precio encontrado en span: '%s'", text)
+					}
+				})
+			}
+		}
+
+		log.Printf("📚 Casa del Libro encontró libro - Título: '%s', Precio: '%s'", title, priceText)
+
+		if title != "" && priceText != "" && s.matchesTitle(title, bookTitle) {
+			if price := s.parsePrice(priceText); price > 0 {
+				if minPrice == 0 || price < minPrice {
+					minPrice = price
+					bestTitle = title
+					found = true
+					log.Printf("✅ Casa del Libro - Mejor precio: $%.0f - %s", price, title)
+				}
+			}
+		} else if title == "" {
+			log.Printf("⚠️ Casa del Libro - Elemento sin título detectado")
+		} else if priceText == "" {
+			log.Printf("⚠️ Casa del Libro - Elemento sin precio: '%s'", title)
+		}
+	})
+
+	// También intentar capturar con selectores más amplios basados en la estructura observada
+	c.OnHTML("li[data-v-070eaadb], article", func(e *colly.HTMLElement) {
+		elementsFound++
+		log.Printf("🔍 Casa del Libro - Elemento %d encontrado (estructura alternativa)", elementsFound)
+
+		// Extraer título desde varios posibles selectores
+		title := strings.TrimSpace(e.ChildText("a.x-result-link"))
+		if title == "" {
+			title = strings.TrimSpace(e.ChildText("a[href*='libro']"))
+			if title == "" {
+				title = strings.TrimSpace(e.ChildText("a"))
+			}
+		}
+
+		// Extraer precio
+		priceText := strings.TrimSpace(e.ChildText("span.x-currency"))
+		if priceText == "" {
+			// Buscar cualquier elemento que contenga precio
+			e.ForEach("span, div", func(i int, elem *colly.HTMLElement) {
+				text := strings.TrimSpace(elem.Text)
+				if strings.Contains(text, "$") && len(text) < 20 && (strings.Contains(text, "000") || strings.Contains(text, ".")) {
+					priceText = text
+					log.Printf("💰 Casa del Libro - Precio en elemento: '%s'", text)
+				}
+			})
+		}
+
+		log.Printf("📚 Casa del Libro (alternativo) encontró - Título: '%s', Precio: '%s'", title, priceText)
+
+		if title != "" && priceText != "" && s.matchesTitle(title, bookTitle) {
+			if price := s.parsePrice(priceText); price > 0 {
+				if minPrice == 0 || price < minPrice {
+					minPrice = price
+					bestTitle = title
+					found = true
+					log.Printf("✅ Casa del Libro (alternativo) - Mejor precio: $%.0f - %s", price, title)
+				}
+			}
+		}
+	})
+
+	// URL de búsqueda en Casa del Libro basada en el formato observado en las capturas
+	// La URL de búsqueda parece ser /search con el parámetro q
+	encodedTitle := url.QueryEscape(bookTitle)
+	searchURL := fmt.Sprintf("%s/search?q=%s", s.config.CasaDelLibroBaseURL, encodedTitle)
+
+	log.Printf("🔗 Buscando en Casa del Libro: %s", searchURL)
+
+	// Agregar callback para debug y captura de estructura general
+	c.OnHTML("html", func(e *colly.HTMLElement) {
+		pageTitle := e.ChildText("title")
+		log.Printf("📱 Casa del Libro página procesada, título: %s", pageTitle)
+
+		// Contar elementos de diferentes tipos para debug
+		articleCount := 0
+		liCount := 0
+		
+		e.ForEach("article", func(i int, article *colly.HTMLElement) {
+			articleCount++
+		})
+		
+		e.ForEach("li.x-base-grid_result", func(i int, li *colly.HTMLElement) {
+			liCount++
+		})
+		
+		e.ForEach("ul[data-v-070eaadb] li", func(i int, li *colly.HTMLElement) {
+			log.Printf("🔍 Casa del Libro - Li del grid %d encontrado", i+1)
+			
+			// Debug específico para este li
+			link := li.DOM.Find("a").First()
+			if link.Length() > 0 {
+				href, _ := link.Attr("href")
+				text := strings.TrimSpace(link.Text())
+				log.Printf("  🔗 Link: href='%s', text='%s'", href, text)
+			}
+			
+			// Debug del precio
+			li.ForEach("span", func(j int, span *colly.HTMLElement) {
+				spanText := strings.TrimSpace(span.Text)
+				if strings.Contains(spanText, "$") {
+					log.Printf("  💰 Precio encontrado: '%s'", spanText)
+				}
+			})
+		})
+		
+		log.Printf("📊 Casa del Libro - Conteo elementos: %d articles, %d li.x-base-grid_result", articleCount, liCount)
+	})
+
+	// Callback para respuesta exitosa
+	c.OnResponse(func(r *colly.Response) {
+		log.Printf("✅ Casa del Libro - Respuesta HTTP %d recibida, tamaño: %d bytes", r.StatusCode, len(r.Body))
+	})
+
+	// Callback para errores HTTP
+	c.OnError(func(r *colly.Response, err error) {
+		log.Printf("❌ Error HTTP en Casa del Libro (status %d): %v", r.StatusCode, err)
+	})
+
+	log.Printf("🌐 Casa del Libro - Visitando URL: %s", searchURL)
+
+	if err := c.Visit(searchURL); err != nil {
+		log.Printf("❌ Casa del Libro - Error al visitar URL: %v", err)
+		errorChan <- fmt.Errorf("error visitando Casa del Libro: %v", err)
 		return
 	}
 
-	log.Printf("✅ Panamericana - Match encontrado! Procesando: %s", item.Name)
+	log.Printf("📊 Casa del Libro - Resumen: %d elementos procesados, encontrado: %t, precio: $%.0f", elementsFound, found, minPrice)
 
-	// Buscar el precio más barato en las ofertas
-	for _, offer := range item.Offers {
-		price := offer.Price
-		log.Printf("🏷️  Oferta encontrada - Precio: $%.0f, Vendedor: %s, Disponibilidad: %s",
-			price, offer.Seller.Name, offer.Availability)
-
-		if price > 0 && (*minPrice == 0 || price < *minPrice) {
-			*minPrice = price
-			*bestProduct = item
-			*found = true
-			log.Printf("✅ Panamericana - Nuevo mejor precio: $%.0f - %s", price, item.Name)
+	if found && minPrice > 0 {
+		finalPrice := models.BookPrice{
+			Title:     bestTitle,
+			Price:     minPrice,
+			Source:    "Casa del Libro",
+			ScrapedAt: time.Now(),
 		}
+		log.Printf("🎉 Casa del Libro - Precio final: $%.0f para '%s'", minPrice, bestTitle)
+		priceChan <- finalPrice
+	} else {
+		log.Printf("❌ Casa del Libro - No se encontraron resultados para '%s' (elementos: %d)", bookTitle, elementsFound)
+		errorChan <- fmt.Errorf("no se encontró '%s' en Casa del Libro", bookTitle)
 	}
 }

@@ -29,6 +29,7 @@ type Config struct {
 	ScrapingSources     []string // Fuentes de scraping habilitadas
 	BuscalibreBaseURL   string   // URL base de Buscalibre
 	PanamericanaBaseURL string   // URL base de Panamericana
+	CasaDelLibroBaseURL string   // URL base de Casa del Libro
 }
 
 // LoadConfig carga la configuración desde variables de entorno y archivo .env
@@ -58,9 +59,10 @@ func LoadConfig() *Config {
 		ScrapingTimeout:     timeout,
 		UserAgent:           getEnv("USER_AGENT", "BookScraper/1.0"),
 		MaxRetries:          maxRetries,
-		ScrapingSources:     parseScrapingSources(getEnv("SCRAPING_SOURCES", "buscalibre,panamericana")),
+		ScrapingSources:     parseScrapingSources(getEnv("SCRAPING_SOURCES", "buscalibre,panamericana,casadellibro")),
 		BuscalibreBaseURL:   getEnv("BUSCALIBRE_BASE_URL", "https://www.buscalibre.com.co"),
 		PanamericanaBaseURL: getEnv("PANAMERICANA_BASE_URL", "https://www.panamericana.com.co"),
+		CasaDelLibroBaseURL: getEnv("CASADELLIBRO_BASE_URL", "https://www.casadellibro.com.co"),
 	}
 }
 
