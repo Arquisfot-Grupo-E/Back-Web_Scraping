@@ -89,7 +89,19 @@ func (h *Handlers) ScrapeBook(c *gin.Context) {
 			savedCount++
 		}
 	}
+	// Enviar evento a Kafka automáticamente después del scraping
+	log.Printf("📨 Enviando evento a Kafka para: '%s'", bookName)
+	kafkaEvent := map[string]string{
+		"book_title": bookName,
+		"source":     "web_scraper_service",
+		"action":     "scraped",
+	}
 
+	if err := h.producer.Publish(kafkaEvent); err != nil {
+		log.Printf("❌ Error enviando evento a Kafka: %v", err)
+	} else {
+		log.Printf("✅ Evento enviado a Kafka correctamente para '%s'", bookName)
+	}
 	// Agregar información sobre cuántos precios se guardaron
 	if len(result.Prices) > 0 {
 		result.Message += fmt.Sprintf(" (%d precios guardados en BD)", savedCount)
