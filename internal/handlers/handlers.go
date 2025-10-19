@@ -11,6 +11,8 @@ import (
 	"github.com/Arquisfot-Grupo-E/Back-Web_Scraping/internal/models"
 	"github.com/Arquisfot-Grupo-E/Back-Web_Scraping/internal/scraper"
 	"github.com/gin-gonic/gin"
+
+	"github.com/Arquisfot-Grupo-E/Back-Web_Scraping/internal/kafka"
 )
 
 // Handlers contiene todas las dependencias necesarias para los controladores HTTP
@@ -18,14 +20,16 @@ type Handlers struct {
 	db      *db.Database     // Conexión a la base de datos
 	scraper *scraper.Scraper // Instancia del scraper
 	config  *config.Config   // Configuración de la aplicación
+	producer *kafka.KafkaProducer // 👈 nuevo campo
 }
 
 // NewHandlers crea una nueva instancia de handlers con todas las dependencias
-func NewHandlers(database *db.Database, scraperInstance *scraper.Scraper, cfg *config.Config) *Handlers {
+func NewHandlers(database *db.Database, scraperInstance *scraper.Scraper, cfg *config.Config, producer *kafka.KafkaProducer) *Handlers {
 	return &Handlers{
-		db:      database,
-		scraper: scraperInstance,
-		config:  cfg,
+		db:       database,
+		scraper:  scraperInstance,
+		config:   cfg,
+		producer: producer,
 	}
 }
 
@@ -85,7 +89,19 @@ func (h *Handlers) ScrapeBook(c *gin.Context) {
 			savedCount++
 		}
 	}
+	// Enviar evento a Kafka automáticamente después del scraping
+	log.Printf("📨 Enviando evento a Kafka para: '%s'", bookName)
+	kafkaEvent := map[string]string{
+		"book_title": bookName,
+		"source":     "web_scraper_service",
+		"action":     "scraped",
+	}
 
+	if err := h.producer.Publish(kafkaEvent); err != nil {
+		log.Printf("❌ Error enviando evento a Kafka: %v", err)
+	} else {
+		log.Printf("✅ Evento enviado a Kafka correctamente para '%s'", bookName)
+	}
 	// Agregar información sobre cuántos precios se guardaron
 	if len(result.Prices) > 0 {
 		result.Message += fmt.Sprintf(" (%d precios guardados en BD)", savedCount)
@@ -118,27 +134,41 @@ func (h *Handlers) GetAllBooks(c *gin.Context) {
 	c.JSON(http.StatusOK, response)
 }
 
-// EnqueueBook encola un libro para procesamiento asíncrono (preparado para persona B)
+// EnqueueBook encola un libro para procesamiento asíncrono (Kafka)
 // POST /enqueue
 func (h *Handlers) EnqueueBook(c *gin.Context) {
 	var request models.EnqueueRequest
 
-	// Validar JSON de entrada
 	if err := c.ShouldBindJSON(&request); err != nil {
 		log.Printf("❌ Error parseando JSON: %v", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	log.Printf("📨 Libro encolado para procesamiento asíncrono: '%s'", request.Book)
+	if request.Book == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "book field is required"})
+		return
+	}
 
-	// Por ahora solo confirma recepción (preparado para integración con módulo asíncrono)
+	log.Printf("📨 Encolando libro para Kafka: '%s'", request.Book)
+
+	event := map[string]string{
+		"book_title": request.Book,
+		"source":     "web_scraper_service",
+	}
+
+	if err := h.producer.Publish(event); err != nil {
+		log.Printf("❌ Error publicando en Kafka: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "error sending message to Kafka"})
+		return
+	}
+
 	response := models.EnqueueResponse{
-		Message: "Book received and queued for processing",
+		Message: "Book sent to Kafka for asynchronous processing",
 		Book:    request.Book,
 		Status:  "queued",
 	}
 
-	log.Printf("✅ Libro '%s' encolado exitosamente", request.Book)
+	log.Printf("✅ Libro '%s' enviado a Kafka correctamente", request.Book)
 	c.JSON(http.StatusOK, response)
 }

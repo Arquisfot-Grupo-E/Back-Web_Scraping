@@ -1,7 +1,6 @@
+// main.go
+// Este archivo existe solo como marcador raíz del proyecto.
+// El punto de entrada real del servicio está en cmd/server/main.go
 package main
 
-import "fmt"
-
-func main() {
-    fmt.Println("¡Hola desde Go!")
-}
+func main() {}
