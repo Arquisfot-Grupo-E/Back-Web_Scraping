@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Base de datos MySQL para el servicio de web scraping
   mysql-scraper:
@@ -28,7 +26,7 @@ services:
     build: .
     container_name: book_scraper_service
     environment:
-      # Configuración de base de datos (apunta al servicio mysql-scraper)
+      # Configuración de base de datos
       - DB_HOST=mysql-scraper
       - DB_PORT=3306
       - DB_USER=scraper
@@ -46,14 +44,20 @@ services:
       - SCRAPING_SOURCES=buscalibre,panamericana
       - BUSCALIBRE_BASE_URL=https://www.buscalibre.com.co
       - PANAMERICANA_BASE_URL=https://www.panamericana.com.co
+
+      # Configuración de Kafka
+      - KAFKA_BROKER=kafka:9092
+      - KAFKA_TOPIC=recommendation-scrapping
+
     ports:
-      - "8080:8080"  # Puerto para el servicio de scraping
+      - "8080:8080"
     depends_on:
       mysql-scraper:
         condition: service_healthy
     networks:
       - bookworm_network
     restart: unless-stopped
+
 
 volumes:
   mysql_scraper_data:

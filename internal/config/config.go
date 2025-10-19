@@ -29,13 +29,19 @@ type Config struct {
 	ScrapingSources     []string // Fuentes de scraping habilitadas
 	BuscalibreBaseURL   string   // URL base de Buscalibre
 	PanamericanaBaseURL string   // URL base de Panamericana
+
+	// kafka configuration
+	KafkaBroker     string
+    KafkaTopic      string
 }
+
+// LoadConfig carga la configuración desde variables de entorno y archivo .env
 
 // LoadConfig carga la configuración desde variables de entorno y archivo .env
 func LoadConfig() *Config {
 	// Cargar archivo .env si existe (no es obligatorio)
 	if err := godotenv.Load(); err != nil {
-		log.Println("No .env file found, using system environment variables")
+		log.Println("⚠️ No .env file found, using system environment variables")
 	}
 
 	// Convertir valores string a entero con valores por defecto seguros
@@ -61,8 +67,13 @@ func LoadConfig() *Config {
 		ScrapingSources:     parseScrapingSources(getEnv("SCRAPING_SOURCES", "buscalibre,panamericana")),
 		BuscalibreBaseURL:   getEnv("BUSCALIBRE_BASE_URL", "https://www.buscalibre.com.co"),
 		PanamericanaBaseURL: getEnv("PANAMERICANA_BASE_URL", "https://www.panamericana.com.co"),
+
+		// Configuración de Kafka
+		KafkaBroker: getEnv("KAFKA_BROKER", "kafka:9092"),
+		KafkaTopic:  getEnv("KAFKA_TOPIC", "recommendation-scrapping"),
 	}
 }
+
 
 // getEnv obtiene una variable de entorno o retorna un valor por defecto
 // Esto permite que la aplicación funcione aunque no tengamos archivo .env

@@ -6,6 +6,7 @@ import (
 	"github.com/Arquisfot-Grupo-E/Back-Web_Scraping/internal/config"
 	"github.com/Arquisfot-Grupo-E/Back-Web_Scraping/internal/db"
 	"github.com/Arquisfot-Grupo-E/Back-Web_Scraping/internal/handlers"
+	"github.com/Arquisfot-Grupo-E/Back-Web_Scraping/internal/kafka"
 	"github.com/Arquisfot-Grupo-E/Back-Web_Scraping/internal/scraper"
 	"github.com/gin-gonic/gin"
 )
@@ -13,12 +14,12 @@ import (
 func main() {
 	log.Println("📚 Iniciando Book Scraper Service...")
 
-	// 1. Cargar configuración desde .env y variables de entorno
+	// 1. Cargar configuración
 	log.Println("⚙️ Cargando configuración...")
 	cfg := config.LoadConfig()
 	log.Printf("✅ Configuración cargada - Puerto: %s, Fuentes: %v", cfg.Port, cfg.ScrapingSources)
 
-	// 2. Conectar a base de datos MySQL
+	// 2. Conectar a base de datos
 	log.Println("🗄️ Conectando a base de datos...")
 	database, err := db.NewDatabase(cfg)
 	if err != nil {
@@ -27,23 +28,31 @@ func main() {
 	defer database.Close()
 	log.Println("✅ Conexión a base de datos establecida")
 
-	// 3. Inicializar scraper con configuración
+	// 3. Inicializar scraper
 	log.Println("🕷️ Inicializando web scraper...")
 	scraperInstance := scraper.NewScraper(cfg)
 	log.Printf("✅ Scraper configurado para fuentes: %v", cfg.ScrapingSources)
 
-	// 4. Inicializar handlers con dependencias
-	log.Println("🎯 Configurando handlers...")
-	h := handlers.NewHandlers(database, scraperInstance, cfg)
+		// 4. Inicializar Kafka Producer
+	log.Println("📡 Conectando con Kafka...")
+	producer, err := kafka.NewKafkaProducer(cfg.KafkaBroker, cfg.KafkaTopic)
+	if err != nil {
+		log.Fatalf("❌ No se pudo crear Kafka producer: %v", err)
+	}
+	defer producer.Close()
+	log.Println("✅ Conexión con Kafka establecida correctamente")
 
-	// 5. Configurar Gin router y middleware
+	// 5. Inicializar handlers con dependencias
+	h := handlers.NewHandlers(database, scraperInstance, cfg, producer)
+
+
+	// 6. Configurar router y middlewares
 	gin.SetMode(cfg.GinMode)
 	router := gin.Default()
 
-	// Middleware global
-	router.Use(gin.Logger())          // Logging de requests
-	router.Use(gin.Recovery())        // Recovery de panics
-	router.Use(func(c *gin.Context) { // CORS básico
+	router.Use(gin.Logger())
+	router.Use(gin.Recovery())
+	router.Use(func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Content-Type")
@@ -54,20 +63,14 @@ func main() {
 		c.Next()
 	})
 
-	// 6. Configurar rutas de la API
+	// 7. Configurar rutas
 	log.Println("🛣️ Configurando rutas...")
 
-	// Health check
 	router.GET("/health", h.HealthCheck)
+	router.GET("/scrape/:book", h.ScrapeBook)
+	router.GET("/books", h.GetAllBooks)
+	router.POST("/enqueue", h.EnqueueBook)
 
-	// Scraping endpoints
-	router.GET("/scrape/:book", h.ScrapeBook) // Scraping inmediato
-	router.GET("/books", h.GetAllBooks)       // Listar todos los libros guardados
-
-	// Async processing endpoint (preparado para persona B)
-	router.POST("/enqueue", h.EnqueueBook) // Encolar para procesamiento asíncrono
-
-	// Ruta de información
 	router.GET("/", func(c *gin.Context) {
 		c.JSON(200, gin.H{
 			"service": "Book Scraper Service",
@@ -84,7 +87,7 @@ func main() {
 
 	log.Printf("✅ Rutas configuradas correctamente")
 
-	// 7. Iniciar servidor HTTP
+	// 8. Iniciar servidor HTTP
 	serverAddr := ":" + cfg.Port
 	log.Printf("🚀 Iniciando servidor en http://localhost%s", serverAddr)
 	log.Printf("📖 Documentación disponible en http://localhost%s/", serverAddr)

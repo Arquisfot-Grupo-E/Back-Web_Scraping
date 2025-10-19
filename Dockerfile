@@ -1,48 +1,61 @@
 # ================================
 # Etapa de construcción (Build Stage)
 # ================================
-FROM golang:1.23-alpine AS builder
+FROM golang:1.23-bullseye AS builder
 
-# Instalar dependencias necesarias para la compilación
-RUN apk add --no-cache git ca-certificates tzdata
+# Instalar dependencias necesarias para compilar con CGO y Kafka
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    pkg-config \
+    librdkafka-dev \
+    ca-certificates \
+    git \
+    tzdata && \
+    rm -rf /var/lib/apt/lists/*
 
 # Configurar directorio de trabajo
 WORKDIR /app
 
-# Copiar archivos de dependencias primero (para optimizar cache de Docker)
+# Copiar archivos de dependencias primero (para aprovechar cache)
 COPY go.mod go.sum ./
 
-# Descargar dependencias (se cachea si go.mod no cambia)
+# Descargar dependencias Go
 RUN go mod download
 
-# Copiar todo el código fuente
+# Copiar el código fuente completo
 COPY . .
 
-# Compilar la aplicación
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o book-scraper ./cmd/server
+# Compilar la aplicación con soporte CGO (requerido por confluent-kafka-go)
+RUN CGO_ENABLED=1 GOOS=linux go build -a -o book-scraper ./cmd/server
+
 
 # ================================
 # Etapa de producción (Production Stage)
 # ================================
-FROM alpine:latest
+FROM debian:bullseye-slim
 
-# Instalar certificados CA y zona horaria
-RUN apk --no-cache add ca-certificates tzdata
+# Instalar librerías necesarias para ejecutar el binario compilado
+RUN apt-get update && apt-get install -y \
+    librdkafka1 \
+    ca-certificates \
+    tzdata \
+    wget && \
+    rm -rf /var/lib/apt/lists/*
 
-# Crear usuario no-root para seguridad
-RUN addgroup -g 1001 -S scraper && \
-    adduser -S scraper -u 1001 -G scraper
+# Crear usuario no-root por seguridad
+RUN groupadd -g 1001 scraper && \
+    useradd -r -u 1001 -g scraper scraper
 
 # Configurar directorio de trabajo
 WORKDIR /home/scraper
 
-# Copiar el binario compilado desde la etapa de construcción
+# Copiar binario desde el builder
 COPY --from=builder /app/book-scraper .
 
-# Copiar archivo de configuración (opcional, las variables pueden venir del docker-compose)
+# Copiar archivo .env (opcional, puedes eliminar esta línea si usas solo variables de entorno)
 COPY --from=builder /app/.env .
 
-# Cambiar permisos del binario
+# Cambiar permisos del ejecutable
 RUN chmod +x book-scraper
 
 # Cambiar al usuario no-root
@@ -55,5 +68,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1
 
-# Comando por defecto para ejecutar la aplicación
+# Comando por defecto para ejecutar la app
 CMD ["./book-scraper"]
