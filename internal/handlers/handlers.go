@@ -89,18 +89,31 @@ func (h *Handlers) ScrapeBook(c *gin.Context) {
 			savedCount++
 		}
 	}
+
+	// Encontrar el menor precio para enviarlo a Kafka
+	var minPrice float64 = 0
+	if len(result.Prices) > 0 {
+		minPrice = result.Prices[0].Price
+		for _, price := range result.Prices {
+			if price.Price < minPrice {
+				minPrice = price.Price
+			}
+		}
+	}
+
 	// Enviar evento a Kafka automáticamente después del scraping
-	log.Printf("📨 Enviando evento a Kafka para: '%s'", bookName)
-	kafkaEvent := map[string]string{
-		"book_title": bookName,
-		"source":     "web_scraper_service",
-		"action":     "scraped",
+	log.Printf("📨 Enviando evento a Kafka para: '%s' con precio mínimo: $%.0f", bookName, minPrice)
+	kafkaEvent := models.KafkaEvent{
+		BookTitle: bookName,
+		MinPrice:  minPrice,
+		Source:    "web_scraper_service",
+		Action:    "scraped",
 	}
 
 	if err := h.producer.Publish(kafkaEvent); err != nil {
 		log.Printf("❌ Error enviando evento a Kafka: %v", err)
 	} else {
-		log.Printf("✅ Evento enviado a Kafka correctamente para '%s'", bookName)
+		log.Printf("✅ Evento enviado a Kafka correctamente para '%s' con precio $%.0f", bookName, minPrice)
 	}
 	// Agregar información sobre cuántos precios se guardaron
 	if len(result.Prices) > 0 {
@@ -129,6 +142,29 @@ func (h *Handlers) GetAllBooks(c *gin.Context) {
 		"books":     books,
 		"count":     len(books),
 		"timestamp": time.Now().Format(time.RFC3339),
+	}
+
+	c.JSON(http.StatusOK, response)
+}
+
+// GetAllUniqueBooks obtiene todos los libros únicos con sus menores precios
+// GET /unique-books
+func (h *Handlers) GetAllUniqueBooks(c *gin.Context) {
+	log.Println("📚 Obteniendo todos los libros únicos de la BD")
+
+	books, err := h.db.GetAllUniqueBooks()
+	if err != nil {
+		log.Printf("❌ Error obteniendo libros únicos: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	log.Printf("✅ Se encontraron %d libros únicos", len(books))
+
+	response := gin.H{
+		"unique_books": books,
+		"count":       len(books),
+		"timestamp":   time.Now().Format(time.RFC3339),
 	}
 
 	c.JSON(http.StatusOK, response)

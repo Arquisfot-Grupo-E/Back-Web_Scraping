@@ -40,3 +40,21 @@ type HealthResponse struct {
 	Timestamp string `json:"timestamp"` // Timestamp actual
 	Database  string `json:"database"`  // Estado de la base de datos
 }
+
+// KafkaEvent representa el evento que se envía a Kafka
+type KafkaEvent struct {
+	BookTitle string  `json:"book_title"` // Título del libro
+	MinPrice  float64 `json:"min_price"`  // Menor precio encontrado
+	Source    string  `json:"source"`     // Fuente del evento (web_scraper_service)
+	Action    string  `json:"action"`     // Acción realizada (scraped)
+}
+
+// UniqueBook representa un libro único con su menor precio
+// Para la tabla de libros únicos en la BD
+type UniqueBook struct {
+	ID        int       `json:"id" db:"id"`                 // ID único en la base de datos
+	Title     string    `json:"title" db:"title"`           // Título del libro
+	MinPrice  float64   `json:"min_price" db:"min_price"`   // Menor precio encontrado
+	Source    string    `json:"source" db:"source"`         // Fuente del menor precio
+	UpdatedAt time.Time `json:"updated_at" db:"updated_at"` // Última actualización
+}
