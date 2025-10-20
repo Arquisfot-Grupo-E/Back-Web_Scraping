@@ -116,3 +116,88 @@ func (d *Database) GetBookPricesByTitle(title string) ([]models.BookPrice, error
 func (d *Database) Ping() error {
 	return d.db.Ping()
 }
+
+// UpsertUniqueBook inserta o actualiza un libro único con su menor precio
+func (d *Database) UpsertUniqueBook(kafkaEvent *models.KafkaEvent) error {
+	// Primero, verificar si el libro ya existe
+	var existingPrice float64
+	var existingID int
+	checkQuery := `SELECT id, min_price FROM unique_books WHERE title = ?`
+	
+	err := d.db.QueryRow(checkQuery, kafkaEvent.BookTitle).Scan(&existingID, &existingPrice)
+	
+	if err == sql.ErrNoRows {
+		// El libro no existe, insertar uno nuevo
+		insertQuery := `
+			INSERT INTO unique_books (title, min_price, source, updated_at) 
+			VALUES (?, ?, ?, ?)`
+		
+		_, err = d.db.Exec(insertQuery, 
+			kafkaEvent.BookTitle, 
+			kafkaEvent.MinPrice, 
+			kafkaEvent.Source, 
+			time.Now())
+		
+		if err != nil {
+			return fmt.Errorf("error inserting unique book: %v", err)
+		}
+		
+		log.Printf("📚 Nuevo libro único insertado: '%s' con precio $%.0f", 
+			kafkaEvent.BookTitle, kafkaEvent.MinPrice)
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("error checking existing book: %v", err)
+	}
+	
+	// El libro existe, verificar si necesita actualización
+	if kafkaEvent.MinPrice < existingPrice {
+		updateQuery := `
+			UPDATE unique_books 
+			SET min_price = ?, source = ?, updated_at = ? 
+			WHERE id = ?`
+		
+		_, err = d.db.Exec(updateQuery, 
+			kafkaEvent.MinPrice, 
+			kafkaEvent.Source, 
+			time.Now(), 
+			existingID)
+		
+		if err != nil {
+			return fmt.Errorf("error updating unique book: %v", err)
+		}
+		
+		log.Printf("📈 Libro único actualizado: '%s' - precio anterior: $%.0f, nuevo precio: $%.0f", 
+			kafkaEvent.BookTitle, existingPrice, kafkaEvent.MinPrice)
+	} else {
+		log.Printf("💰 Libro único no actualizado: '%s' - precio actual $%.0f es menor que el nuevo $%.0f", 
+			kafkaEvent.BookTitle, existingPrice, kafkaEvent.MinPrice)
+	}
+	
+	return nil
+}
+
+// GetAllUniqueBooks obtiene todos los libros únicos con sus menores precios
+func (d *Database) GetAllUniqueBooks() ([]models.UniqueBook, error) {
+	query := `
+		SELECT id, title, min_price, source, updated_at 
+		FROM unique_books 
+		ORDER BY updated_at DESC`
+
+	rows, err := d.db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("error querying unique books: %v", err)
+	}
+	defer rows.Close()
+
+	var books []models.UniqueBook
+	for rows.Next() {
+		var book models.UniqueBook
+		err := rows.Scan(&book.ID, &book.Title, &book.MinPrice, &book.Source, &book.UpdatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("error scanning unique book: %v", err)
+		}
+		books = append(books, book)
+	}
+
+	return books, nil
+}
