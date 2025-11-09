@@ -9,12 +9,12 @@ services:
       MYSQL_USER: scraper
       MYSQL_PASSWORD: scraperpass
     ports:
-      - "3312:3306"  # Puerto externo 3312 para evitar conflictos
+      - "3312:3306"  # Puerto externo 3312 para desarrollo individual
     volumes:
       - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
       - mysql_scraper_data:/var/lib/mysql
     networks:
-      - bookworm_network
+      - data_network  # Solo en red de datos
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
       timeout: 20s
@@ -55,14 +55,30 @@ services:
       mysql-scraper:
         condition: service_healthy
     networks:
-      - bookworm_network
+      - backend_network  # Recibe peticiones del gateway
+      - data_network     # Accede a MySQL y Kafka
     restart: unless-stopped
-
 
 volumes:
   mysql_scraper_data:
 
+# =============================================================================
+# REDES SEGMENTADAS
+# =============================================================================
+# Back-Web_Scraping:
+#   - backend_network: Recibe peticiones del gateway
+#   - data_network: Accede a MySQL y Kafka
+#
+# MySQL:
+#   - data_network: Red aislada de datos
+#
+# PREREQUISITO: Ejecutar bash scripts/setup-networks.sh (en Middleware-Graphql)
+# =============================================================================
 networks:
-  bookworm_network:
+  backend_network:
     external: true
-    name: bookworm_network
+    name: backend_network
+  
+  data_network:
+    external: true
+    name: data_network
